@@ -1,0 +1,9 @@
+node_modules/
+
+test_raw_videos/
+transcoded/
+
+src/raw_files/
+src/transcoded/
+
+.env
