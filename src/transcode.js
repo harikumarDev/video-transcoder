@@ -7,13 +7,15 @@ const ffmpegPath = require("ffmpeg-static");
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+const db = require("../config/db");
+const Video = require("../models/video");
 const { getObject, uploadDir } = require("./aws");
 const {
   transcodeConfig,
   targetResolutions,
-  bandwidthLimits,
   resolutions_named,
 } = require("./constants");
+const { getMasterManifestContent, getVideoResolution } = require("./utils");
 
 const transcodeVideo = (inputPath, outputDir, resolutionOptions) => {
   const { resolution, fps, videoBitrate, audioBitrate } = resolutionOptions;
@@ -51,49 +53,37 @@ const transcodeVideo = (inputPath, outputDir, resolutionOptions) => {
   });
 };
 
-const getVideoResolution = (filePath) => {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        return reject("Error getting video resolution: ", err.message);
-      }
+const updateDB = async (videoId, hlsPath) => {
+  console.log("Updating video to processed: ", videoId);
 
-      const { width, height } = metadata.streams[0];
+  try {
+    const videoUpdates = {
+      processed: true,
+      hlsPath,
+    };
 
-      resolve({
-        width,
-        height,
-      });
-    });
-  });
-};
+    db.connect();
 
-const getMasterManifestContent = (resolutions) => {
-  const manifestContent = ["#EXTM3U", "#EXT-X-VERSION:3\n"];
+    await Video.findByIdAndUpdate(videoId, videoUpdates);
 
-  resolutions.forEach((res) => {
-    const { resolution } = res;
-    const manifestFile = `manifest_${resolution}.m3u8`;
+    db.disconnect();
 
-    const bandwidth = bandwidthLimits[resolution];
-
-    manifestContent.push(
-      `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resolution}`
-    );
-    manifestContent.push(manifestFile);
-  });
-
-  return manifestContent;
+    console.log("Video set as processed");
+  } catch (err) {
+    console.log("Error setting video to processed: ", err);
+  }
 };
 
 async function start() {
   // Body of SQS message
-  const messageBody = process.env.MSG_BODY;
+  let messageBody = process.env.MSG_BODY;
 
   if (!messageBody) {
     console.log("No message body.");
     return;
   }
+
+  messageBody = JSON.parse(messageBody.replace(/\\"/g, '"'));
 
   if (!messageBody["Records"] || messageBody["Records"].length === 0) {
     console.log("No records in message body: ", messageBody);
@@ -183,6 +173,9 @@ async function start() {
     await uploadDir(hlsPath, outputDir);
 
     console.log("Uploaded files to S3");
+
+    const masterHlsPath = hlsPath + "/master.m3u8";
+    await updateDB(videoId, masterHlsPath);
   } catch (err) {
     console.log("Error transcoding the video: ", err);
     if (existsSync(filePath)) {
