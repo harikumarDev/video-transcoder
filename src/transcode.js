@@ -9,13 +9,19 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 const db = require("../config/db");
 const Video = require("../models/video");
-const { getObject, uploadDir } = require("./aws");
+const { getObject, upload, uploadDir } = require("./aws");
+const { generateThumbnail } = require("./thumbnail");
 const {
   transcodeConfig,
   targetResolutions,
   resolutions_named,
 } = require("./constants");
-const { getMasterManifestContent, getVideoResolution } = require("./utils");
+const {
+  getMasterManifestContent,
+  getVideoResolution,
+  getVideoDuration,
+  secondsToHMS,
+} = require("./utils");
 
 const transcodeVideo = (inputPath, outputDir, resolutionOptions) => {
   const { resolution, fps, videoBitrate, audioBitrate } = resolutionOptions;
@@ -53,22 +59,31 @@ const transcodeVideo = (inputPath, outputDir, resolutionOptions) => {
   });
 };
 
-const updateDB = async (videoId, hlsPath) => {
+const getVideoDetails = async (videoId) => {
+  console.log("Getting video details: ", videoId);
+
+  try {
+    await db.connect();
+
+    const video = await Video.findById(videoId);
+
+    await db.disconnect();
+
+    return video;
+  } catch (err) {
+    console.log("Error getting video details: ", err);
+  }
+};
+
+const updateVideo = async (videoId, videoUpdates) => {
   console.log("Updating video to processed: ", videoId);
 
   try {
-    const videoUpdates = {
-      processed: true,
-      hlsPath,
-    };
-
-    db.connect();
+    await db.connect();
 
     await Video.findByIdAndUpdate(videoId, videoUpdates);
 
-    db.disconnect();
-
-    console.log("Video set as processed");
+    await db.disconnect();
   } catch (err) {
     console.log("Error setting video to processed: ", err);
   }
@@ -114,6 +129,16 @@ async function start() {
   const filePath = `${downloadDir}/${videoId}`;
 
   try {
+    const video = await getVideoDetails(videoId);
+
+    if (!video) {
+      throw new Error(`Video not found: ${videoId}`);
+    }
+
+    if (video.isProcessed) {
+      throw new Error("Video is already processed");
+    }
+
     console.log("Downloading video from S3...: ", videoId);
     await getObject(objectKey, filePath);
     console.log("Video downloaded: ", videoId);
@@ -175,7 +200,48 @@ async function start() {
     console.log("Uploaded files to S3");
 
     const masterHlsPath = hlsPath + "/master.m3u8";
-    await updateDB(videoId, masterHlsPath);
+    const duration = await getVideoDuration(filePath); // duration in seconds
+    const formattedDuration = secondsToHMS(duration); // duration in the format HH:MM:SS
+
+    let videoUpdates = {
+      isProcessed: true,
+      hlsPath: masterHlsPath,
+      duration: formattedDuration,
+    };
+
+    // Generate thumbnail if not uploaded by user
+    if (!video.thumbnailPath) {
+      const thumbnailsDir = path.join(__dirname, "./thumbnails");
+      const thumbailFileName = videoId + ".jpg";
+
+      if (!existsSync(thumbnailsDir)) {
+        mkdirSync(thumbnailsDir, { recursive: true });
+      }
+
+      const randomTimestamp = Math.floor(Math.random() * duration);
+
+      await generateThumbnail(
+        filePath,
+        randomTimestamp,
+        thumbnailsDir,
+        thumbailFileName
+      );
+
+      // Uploading to S3
+      const thumbnailPath = `${thumbnailsDir}/${thumbailFileName}`;
+      const s3Path = `thumbnails/${thumbailFileName}`;
+
+      await upload(s3Path, thumbnailPath, "image/jpeg");
+
+      videoUpdates = {
+        ...videoUpdates,
+        thumbnailPath: s3Path,
+      };
+    }
+
+    await updateVideo(video._id, videoUpdates);
+
+    console.log("Video processed.");
   } catch (err) {
     console.log("Error transcoding the video: ", err);
     if (existsSync(filePath)) {

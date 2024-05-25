@@ -12,14 +12,15 @@ const videoSchema = new mongoose.Schema(
       required: true,
     },
     description: String,
-    thumbnail: String,
+    thumbnailPath: String,
     hlsPath: String,
+    duration: String,
     user: {
       type: mongoose.Schema.Types.ObjectId,
       required: true,
       ref: "User",
     },
-    processed: {
+    isProcessed: {
       type: Boolean,
       default: false,
     },

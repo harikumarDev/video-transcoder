@@ -65,7 +65,8 @@ const upload = async (s3Path, filePath, contentType) => {
 const uploadDir = async (path, localDir) => {
   const files = fs.readdirSync(localDir);
 
-  files.forEach(async (file) => {
+  for (let i = 0; i < files.length; ++i) {
+    const file = files[i];
     const s3Path = `${path}/${file}`;
     const filePath = `${localDir}/${file}`;
     const contentType = file.endsWith(".ts")
@@ -75,7 +76,7 @@ const uploadDir = async (path, localDir) => {
     await upload(s3Path, filePath, contentType);
 
     fs.unlinkSync(filePath);
-  });
+  }
 };
 
 module.exports = {
